@@ -1,0 +1,78 @@
+name: Enforce PR Naming Convention
+
+on:
+  workflow_call:
+    inputs:
+      pr-title-regex:
+        description: 'Regex pattern for PR title (e.g., "^(PAYABL|PONE)-\d+.*$")'
+        required: false
+        type: string
+        default: '^(PAYABL|PONE)-\d+.*$'
+      error-message:
+        description: 'Custom error message for PR title validation'
+        required: false
+        type: string
+        default: 'Error: Pull Request title does not start with the proper format'
+      target-branches:
+        description: 'Comma-separated list of target branches to validate against'
+        required: false
+        type: string
+        default: 'develop'
+      examples:
+        description: 'Example formats to show in error message'
+        required: false
+        type: string
+        default: 'PAYABL-123 some text or PONE-123 some text'
+
+jobs:
+  enforce-pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title format
+        uses: actions-ecosystem/action-regex-match@v2
+        id: regex-match
+        with:
+          text: ${{ github.event.pull_request.title }}
+          regex: ${{ inputs.pr-title-regex }}
+
+      - name: Check if PR targets correct branch
+        id: branch-check
+        run: |
+          TARGET_BRANCHES="${{ inputs.target-branches }}"
+          BASE_BRANCH="${{ github.base_ref }}"
+          
+          IFS=',' read -ra ALLOWED_BRANCHES <<< "$TARGET_BRANCHES"
+          BRANCH_ALLOWED=false
+          
+          for branch in "${ALLOWED_BRANCHES[@]}"; do
+            branch=$(echo "$branch" | xargs) # trim whitespace
+            if [ "$BASE_BRANCH" = "$branch" ]; then
+              BRANCH_ALLOWED=true
+              break
+            fi
+          done
+          
+          echo "branch-allowed=$BRANCH_ALLOWED" >> $GITHUB_OUTPUT
+          echo "Checking PR against branch: $BASE_BRANCH"
+          echo "Allowed branches: $TARGET_BRANCHES"
+
+      - name: Validate the PR title
+        if: steps.branch-check.outputs.branch-allowed == 'true'
+        run: |
+          if [[ -z "${{ steps.regex-match.outputs.match }}" ]]; then
+            echo "❌ ${{ inputs.error-message }}"
+            echo ""
+            echo "Current PR title: '${{ github.event.pull_request.title }}'"
+            echo "Expected format: ${{ inputs.examples }}"
+            echo "Pattern: ${{ inputs.pr-title-regex }}"
+            echo ""
+            echo "ℹ️  This validation only applies to PRs targeting: ${{ inputs.target-branches }}"
+            exit 1
+          fi
+          echo "✅ PR title format is valid"
+
+      - name: Skip validation for other branches
+        if: steps.branch-check.outputs.branch-allowed == 'false'
+        run: |
+          echo "ℹ️  Skipping PR title validation"
+          echo "Target branch '${{ github.base_ref }}' is not in validation list: ${{ inputs.target-branches }}"

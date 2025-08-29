@@ -3,273 +3,262 @@ name: PR Validation
 on:
   workflow_call:
     inputs:
-      node-version:
-        description: 'Node.js version to use'
+      # PR Title validation
+      enforce-pr-title:
+        description: 'Enable PR title validation'
+        required: false
+        type: boolean
+        default: false
+      pr-title-regex:
+        description: 'Regex pattern for PR title (e.g., "^(PAYABL|PONE)-\d+.*$")'
         required: false
         type: string
-        default: '22.x'
-      project-type:
-        description: 'Project type (nodejs, nestjs, nextjs)'
-        required: true
-        type: string
-      mongodb-version:
-        description: 'MongoDB version for NestJS tests'
+        default: '^(PAYABL|PONE)-\d+.*$'
+      pr-title-error-message:
+        description: 'Custom error message for PR title validation'
         required: false
         type: string
-        default: '7.0'
-      skip-lint:
-        description: 'Skip lint step'
+        default: 'PR title must follow format: PAYABL-123 or PONE-123 followed by description'
+      
+      # Branch naming validation  
+      enforce-branch-naming:
+        description: 'Enable branch name validation'
         required: false
         type: boolean
         default: false
-      skip-typecheck:
-        description: 'Skip type check step'
+      branch-name-regex:
+        description: 'Regex pattern for branch names'
+        required: false
+        type: string
+        default: '^(feature|bugfix|hotfix|chore)\/[a-zA-Z0-9-_]+$'
+      
+      # File changes validation
+      enforce-file-patterns:
+        description: 'Enable file pattern validation'
         required: false
         type: boolean
         default: false
-      skip-tests:
-        description: 'Skip test step'
+      forbidden-file-patterns:
+        description: 'Comma-separated list of forbidden file patterns'
+        required: false
+        type: string
+        default: '*.log,*.tmp,node_modules/**'
+      
+      # Commit message validation
+      enforce-commit-message:
+        description: 'Enable commit message validation'
         required: false
         type: boolean
         default: false
-      skip-e2e:
-        description: 'Skip e2e tests'
+      commit-message-regex:
+        description: 'Regex pattern for commit messages'
+        required: false
+        type: string
+        default: '^(feat|fix|chore|docs|style|refactor|test)(\(.+\))?: .{1,50}'
+      
+      # PR size validation
+      enforce-pr-size:
+        description: 'Enable PR size validation'
         required: false
         type: boolean
         default: false
-      skip-build:
-        description: 'Skip build step'
-        required: false
-        type: boolean
-        default: false
-      coverage-threshold:
-        description: 'Coverage threshold percentage'
+      max-changed-files:
+        description: 'Maximum number of changed files allowed'
         required: false
         type: number
-        default: 80
-      test-env:
-        description: 'Test environment for Node.js projects'
+        default: 20
+      max-additions:
+        description: 'Maximum number of line additions allowed'
+        required: false
+        type: number
+        default: 500
+      
+      # Custom validation
+      custom-validation-command:
+        description: 'Custom validation command to run'
         required: false
         type: string
-        default: 'dev'
-      working-directory:
-        description: 'Working directory'
+      
+      # Target branches
+      target-branches:
+        description: 'Comma-separated list of target branches to validate against'
         required: false
         type: string
-        default: '.'
-      custom-lint-command:
-        description: 'Custom lint command (overrides default)'
-        required: false
-        type: string
-      custom-test-command:
-        description: 'Custom test command (overrides default)'
-        required: false
-        type: string
-      run-security-audit:
-        description: 'Run npm audit for security vulnerabilities'
-        required: false
-        type: boolean
-        default: true
-      fail-on-audit:
-        description: 'Fail PR if security vulnerabilities found'
-        required: false
-        type: boolean
-        default: false
-    secrets:
-      NPM_TOKEN:
-        description: 'NPM registry token'
-        required: false
-      SONAR_TOKEN:
-        description: 'SonarQube token'
-        required: false
-    outputs:
-      coverage-percentage:
-        description: 'Coverage percentage achieved'
-        value: ${{ jobs.pr-validation.outputs.coverage }}
+        default: 'main,develop'
 
 jobs:
   pr-validation:
     name: PR Validation
     runs-on: ubuntu-latest
     
-    defaults:
-      run:
-        working-directory: ${{ inputs.working-directory }}
-    
-    services:
-      mongodb:
-        image: ${{ inputs.project-type == 'nestjs' && format('mongo:{0}', inputs.mongodb-version) || '' }}
-        ports:
-          - 27017:27017
-        env:
-          MONGO_INITDB_ROOT_USERNAME: root
-          MONGO_INITDB_ROOT_PASSWORD: password
-        options: >-
-          ${{ inputs.project-type == 'nestjs' && '--health-cmd "mongosh --eval \"db.runCommand(\\\"ping\\\")\""
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5' || '' }}
-
-    outputs:
-      coverage: ${{ steps.coverage.outputs.percentage }}
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Validate PR title
+        if: inputs.enforce-pr-title
+        uses: actions-ecosystem/action-regex-match@v2
+        id: pr-title-check
         with:
-          node-version: ${{ inputs.node-version }}
-          cache: 'npm'
-          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+          text: ${{ github.event.pull_request.title }}
+          regex: ${{ inputs.pr-title-regex }}
 
-      - name: Setup NPM registry
-        if: secrets.NPM_TOKEN != ''
+      - name: Fail on invalid PR title
+        if: inputs.enforce-pr-title && steps.pr-title-check.outputs.match == ''
         run: |
-          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" >> ~/.npmrc
+          echo "❌ ${{ inputs.pr-title-error-message }}"
+          echo "Current PR title: '${{ github.event.pull_request.title }}'"
+          echo "Expected pattern: ${{ inputs.pr-title-regex }}"
+          exit 1
 
-      - name: Cache node modules
-        id: cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ inputs.working-directory }}/node_modules
-          key: ${{ runner.os }}-node-${{ inputs.project-type }}-${{ hashFiles(format('{0}/package-lock.json', inputs.working-directory)) }}
-          restore-keys: |
-            ${{ runner.os }}-node-${{ inputs.project-type }}-
-
-      - name: Install dependencies
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: npm ci
-
-      - name: Security audit
-        if: inputs.run-security-audit
+      - name: Validate branch name
+        if: inputs.enforce-branch-naming
         run: |
-          npm audit --audit-level=moderate
-          if [ $? -ne 0 ] && [ "${{ inputs.fail-on-audit }}" == "true" ]; then
-            echo "Security vulnerabilities found!"
+          BRANCH_NAME="${{ github.head_ref }}"
+          if [[ ! "$BRANCH_NAME" =~ ${{ inputs.branch-name-regex }} ]]; then
+            echo "❌ Branch name '$BRANCH_NAME' does not match required pattern"
+            echo "Expected pattern: ${{ inputs.branch-name-regex }}"
+            echo "Examples: feature/add-new-component, bugfix/fix-login-issue, chore/update-dependencies"
             exit 1
           fi
-        continue-on-error: ${{ !inputs.fail-on-audit }}
+          echo "✅ Branch name '$BRANCH_NAME' is valid"
 
-      - name: Lint
-        if: ${{ !inputs.skip-lint }}
+      - name: Validate file changes
+        if: inputs.enforce-file-patterns
         run: |
-          if [ -n "${{ inputs.custom-lint-command }}" ]; then
-            ${{ inputs.custom-lint-command }}
-          elif [ "${{ inputs.project-type }}" == "nodejs" ]; then
-            echo "No lint command for Node.js projects"
-          else
-            npm run lint
-          fi
-
-      - name: Type check
-        if: ${{ !inputs.skip-typecheck }}
-        run: |
-          if npm run | grep -q "type:check"; then
-            npm run type:check
-          else
-            echo "No type:check script found, skipping..."
-          fi
-
-      - name: i18n validation (Next.js)
-        if: ${{ inputs.project-type == 'nextjs' }}
-        run: |
-          if npm run | grep -q "i18n:check"; then
-            npm run i18n:check
-          else
-            echo "No i18n:check script found, skipping..."
-          fi
-
-      - name: Build
-        if: ${{ !inputs.skip-build }}
-        run: npm run build
-
-      - name: Run tests
-        if: ${{ !inputs.skip-tests }}
-        env:
-          TEST_ENV: ${{ inputs.test-env }}
-          MONGODB_URI: ${{ inputs.project-type == 'nestjs' && 'mongodb://root:password@localhost:27017/test?authSource=admin' || '' }}
-        run: |
-          if [ -n "${{ inputs.custom-test-command }}" ]; then
-            ${{ inputs.custom-test-command }}
-          elif [ "${{ inputs.project-type }}" == "nodejs" ]; then
-            if [ "${{ inputs.test-env }}" == "local" ]; then
-              npm run test:local
-            elif [ "${{ inputs.test-env }}" == "prod" ]; then
-              npm run test:prod  
-            else
-              npm run test:dev
+          echo "Checking for forbidden file patterns..."
+          FORBIDDEN_PATTERNS="${{ inputs.forbidden-file-patterns }}"
+          IFS=',' read -ra PATTERNS <<< "$FORBIDDEN_PATTERNS"
+          
+          FOUND_FORBIDDEN=false
+          for pattern in "${PATTERNS[@]}"; do
+            if git diff --name-only origin/${{ github.base_ref }}..HEAD | grep -E "$pattern"; then
+              echo "❌ Found forbidden file pattern: $pattern"
+              FOUND_FORBIDDEN=true
             fi
-          elif [ "${{ inputs.project-type }}" == "nestjs" ]; then
-            npm run test:cov:combined
-          else
-            npm run test:cov
-          fi
-
-      - name: Run e2e tests
-        if: ${{ !inputs.skip-e2e && (inputs.project-type == 'nestjs' || inputs.project-type == 'nextjs') }}
-        env:
-          MONGODB_URI: ${{ inputs.project-type == 'nestjs' && 'mongodb://root:password@localhost:27017/test?authSource=admin' || '' }}
-        run: |
-          if [ "${{ inputs.project-type }}" == "nextjs" ]; then
-            npx playwright install --with-deps
-            npm run e2e
-          elif [ "${{ inputs.project-type }}" == "nestjs" ]; then
-            npm run test:e2e:cov
-          fi
-
-      - name: Extract coverage percentage
-        if: ${{ !inputs.skip-tests }}
-        id: coverage
-        run: |
-          if [ -f "coverage/lcov-report/index.html" ]; then
-            COVERAGE=$(grep -o '[0-9]\+\.[0-9]\+%' coverage/lcov-report/index.html | head -1 | sed 's/%//')
-            echo "percentage=$COVERAGE" >> $GITHUB_OUTPUT
-          else
-            echo "percentage=0" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Coverage threshold check
-        if: ${{ !inputs.skip-tests && inputs.coverage-threshold > 0 }}
-        run: |
-          CURRENT_COVERAGE=$(echo "${{ steps.coverage.outputs.percentage }}" | cut -d'.' -f1)
-          if [ "$CURRENT_COVERAGE" -lt "${{ inputs.coverage-threshold }}" ]; then
-            echo "❌ Coverage $CURRENT_COVERAGE% is below threshold ${{ inputs.coverage-threshold }}%"
+          done
+          
+          if [ "$FOUND_FORBIDDEN" = true ]; then
+            echo "❌ PR contains forbidden file patterns"
             exit 1
-          else
-            echo "✅ Coverage $CURRENT_COVERAGE% meets threshold ${{ inputs.coverage-threshold }}%"
           fi
+          echo "✅ No forbidden file patterns found"
 
-      - name: Comment PR with results
-        if: github.event_name == 'pull_request'
+      - name: Validate commit messages
+        if: inputs.enforce-commit-message
+        run: |
+          echo "Validating commit messages..."
+          INVALID_COMMITS=()
+          
+          for commit in $(git rev-list origin/${{ github.base_ref }}..HEAD); do
+            MESSAGE=$(git log --format=%s -n 1 $commit)
+            if [[ ! "$MESSAGE" =~ ${{ inputs.commit-message-regex }} ]]; then
+              INVALID_COMMITS+=("$commit: $MESSAGE")
+            fi
+          done
+          
+          if [ ${#INVALID_COMMITS[@]} -ne 0 ]; then
+            echo "❌ Found invalid commit messages:"
+            printf '%s\n' "${INVALID_COMMITS[@]}"
+            echo ""
+            echo "Expected pattern: ${{ inputs.commit-message-regex }}"
+            echo "Examples: feat: add new feature, fix(auth): resolve login issue"
+            exit 1
+          fi
+          echo "✅ All commit messages are valid"
+
+      - name: Validate PR size
+        if: inputs.enforce-pr-size
+        run: |
+          CHANGED_FILES=$(git diff --name-only origin/${{ github.base_ref }}..HEAD | wc -l)
+          ADDITIONS=$(git diff --numstat origin/${{ github.base_ref }}..HEAD | awk '{sum += $1} END {print sum}')
+          
+          echo "PR Statistics:"
+          echo "- Changed files: $CHANGED_FILES (max: ${{ inputs.max-changed-files }})"
+          echo "- Line additions: $ADDITIONS (max: ${{ inputs.max-additions }})"
+          
+          if [ $CHANGED_FILES -gt ${{ inputs.max-changed-files }} ]; then
+            echo "❌ PR changes too many files ($CHANGED_FILES > ${{ inputs.max-changed-files }})"
+            echo "Consider splitting this PR into smaller changes"
+            exit 1
+          fi
+          
+          if [ $ADDITIONS -gt ${{ inputs.max-additions }} ]; then
+            echo "❌ PR adds too many lines ($ADDITIONS > ${{ inputs.max-additions }})"
+            echo "Consider splitting this PR into smaller changes"
+            exit 1
+          fi
+          
+          echo "✅ PR size is within acceptable limits"
+
+      - name: Run custom validation
+        if: inputs.custom-validation-command != ''
+        run: ${{ inputs.custom-validation-command }}
+
+      - name: Validate target branch
+        run: |
+          TARGET_BRANCHES="${{ inputs.target-branches }}"
+          BASE_BRANCH="${{ github.base_ref }}"
+          
+          IFS=',' read -ra ALLOWED_BRANCHES <<< "$TARGET_BRANCHES"
+          BRANCH_ALLOWED=false
+          
+          for branch in "${ALLOWED_BRANCHES[@]}"; do
+            if [ "$BASE_BRANCH" = "$branch" ]; then
+              BRANCH_ALLOWED=true
+              break
+            fi
+          done
+          
+          if [ "$BRANCH_ALLOWED" = false ]; then
+            echo "❌ PR targets invalid branch '$BASE_BRANCH'"
+            echo "Allowed target branches: $TARGET_BRANCHES"
+            exit 1
+          fi
+          echo "✅ PR targets valid branch '$BASE_BRANCH'"
+
+      - name: PR validation summary
+        if: always()
+        run: |
+          echo "## 🔍 PR Validation Summary"
+          echo ""
+          echo "**Validations performed:**"
+          echo "- ${{ inputs.enforce-pr-title && '✅' || '⏭️' }} PR Title validation"
+          echo "- ${{ inputs.enforce-branch-naming && '✅' || '⏭️' }} Branch naming validation"
+          echo "- ${{ inputs.enforce-file-patterns && '✅' || '⏭️' }} File pattern validation"
+          echo "- ${{ inputs.enforce-commit-message && '✅' || '⏭️' }} Commit message validation"
+          echo "- ${{ inputs.enforce-pr-size && '✅' || '⏭️' }} PR size validation"
+          echo "- ${{ inputs.custom-validation-command != '' && '✅' || '⏭️' }} Custom validation"
+          echo "- ✅ Target branch validation"
+
+      - name: Comment validation results
+        if: github.event_name == 'pull_request' && always()
         uses: actions/github-script@v7
         with:
           script: |
-            const coverage = '${{ steps.coverage.outputs.percentage }}' || '0';
-            const threshold = '${{ inputs.coverage-threshold }}';
-            const projectType = '${{ inputs.project-type }}';
+            const validations = [
+              { name: 'PR Title', enabled: ${{ inputs.enforce-pr-title }} },
+              { name: 'Branch Naming', enabled: ${{ inputs.enforce-branch-naming }} },
+              { name: 'File Patterns', enabled: ${{ inputs.enforce-file-patterns }} },
+              { name: 'Commit Messages', enabled: ${{ inputs.enforce-commit-message }} },
+              { name: 'PR Size', enabled: ${{ inputs.enforce-pr-size }} },
+              { name: 'Custom Validation', enabled: '${{ inputs.custom-validation-command }}' !== '' },
+              { name: 'Target Branch', enabled: true }
+            ];
             
-            const coverageEmoji = parseFloat(coverage) >= threshold ? '✅' : '❌';
+            let body = `## 🔍 PR Validation Results\n\n`;
+            body += `**Validations performed:**\n`;
             
-            const body = `## 🔍 PR Validation Results
+            validations.forEach(validation => {
+              const status = validation.enabled ? '✅' : '⏭️';
+              body += `- ${status} ${validation.name}\n`;
+            });
             
-            **Project Type:** \`${projectType}\`
-            **Node.js Version:** \`${{ inputs.node-version }}\`
-            
-            ### Test Results
-            ${coverageEmoji} **Coverage:** ${coverage}% (threshold: ${threshold}%)
-            
-            ### Validation Steps
-            - ${{ !inputs.skip-lint && '✅' || '⏭️' }} Linting
-            - ${{ !inputs.skip-typecheck && '✅' || '⏭️' }} Type checking  
-            - ${{ !inputs.skip-build && '✅' || '⏭️' }} Build
-            - ${{ !inputs.skip-tests && '✅' || '⏭️' }} Unit tests
-            - ${{ !inputs.skip-e2e && (inputs.project-type == 'nestjs' || inputs.project-type == 'nextjs') && '✅' || '⏭️' }} E2E tests
-            - ${{ inputs.run-security-audit && '✅' || '⏭️' }} Security audit
-            `;
+            if ('${{ inputs.enforce-pr-title }}' === 'true') {
+              body += `\n**PR Title Pattern:** \`${{ inputs.pr-title-regex }}\`\n`;
+            }
             
             github.rest.issues.createComment({
               issue_number: context.issue.number,
@@ -277,20 +266,3 @@ jobs:
               repo: context.repo.repo,
               body: body
             });
-
-      - name: Upload test artifacts
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-artifacts-${{ inputs.project-type }}
-          path: |
-            ${{ inputs.working-directory }}/coverage/
-            ${{ inputs.working-directory }}/playwright-report/
-            ${{ inputs.working-directory }}/test-results/
-          retention-days: 7
-
-      - name: SonarQube analysis
-        if: secrets.SONAR_TOKEN != ''
-        uses: sonarqube-quality-gate-action@master
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
