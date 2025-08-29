@@ -1,0 +1,119 @@
+name: NestJS CI Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node.js version to use'
+        required: false
+        type: string
+        default: '22.x'
+      mongodb-version:
+        description: 'MongoDB version for tests'
+        required: false
+        type: string
+        default: '7.0'
+      skip-build:
+        description: 'Skip build step'
+        required: false
+        type: boolean
+        default: false
+      skip-tests:
+        description: 'Skip test step'
+        required: false
+        type: boolean
+        default: false
+      skip-e2e:
+        description: 'Skip e2e tests'
+        required: false
+        type: boolean
+        default: false
+      coverage-threshold:
+        description: 'Coverage threshold percentage'
+        required: false
+        type: number
+        default: 80
+      working-directory:
+        description: 'Working directory'
+        required: false
+        type: string
+        default: '.'
+    secrets:
+      NPM_TOKEN:
+        description: 'NPM registry token'
+        required: false
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    
+    services:
+      mongodb:
+        image: mongo:${{ inputs.mongodb-version }}
+        ports:
+          - 27017:27017
+        env:
+          MONGO_INITDB_ROOT_USERNAME: root
+          MONGO_INITDB_ROOT_PASSWORD: password
+        options: >-
+          --health-cmd "mongosh --eval 'db.runCommand(\"ping\")'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'npm'
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Setup NPM registry
+        if: secrets.NPM_TOKEN != ''
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" >> ~/.npmrc
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        if: ${{ !inputs.skip-build }}
+        run: npm run build
+
+      - name: Run unit tests
+        if: ${{ !inputs.skip-tests }}
+        run: npm run test:cov
+
+      - name: Run e2e tests
+        if: ${{ !inputs.skip-e2e }}
+        env:
+          MONGODB_URI: mongodb://root:password@localhost:27017/test?authSource=admin
+        run: npm run test:e2e:cov
+
+      - name: Combined coverage check
+        if: ${{ !inputs.skip-tests && !inputs.skip-e2e }}
+        env:
+          COVERAGE_THRESHOLD: ${{ inputs.coverage-threshold }}
+        run: |
+          npm run test:cov:combined
+          
+      - name: Upload coverage reports
+        if: ${{ !inputs.skip-tests }}
+        uses: codecov/codecov-action@v4
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          files: ./coverage/lcov.info,./coverage-e2e/lcov.info
+          fail_ci_if_error: false

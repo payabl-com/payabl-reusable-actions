@@ -1,0 +1,115 @@
+name: Next.js CI Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node.js version to use'
+        required: false
+        type: string
+        default: '22.x'
+      skip-build:
+        description: 'Skip build step'
+        required: false
+        type: boolean
+        default: false
+      skip-tests:
+        description: 'Skip unit tests'
+        required: false
+        type: boolean
+        default: false
+      skip-e2e:
+        description: 'Skip e2e tests'
+        required: false
+        type: boolean
+        default: false
+      skip-i18n-check:
+        description: 'Skip i18n validation'
+        required: false
+        type: boolean
+        default: false
+      working-directory:
+        description: 'Working directory'
+        required: false
+        type: string
+        default: '.'
+    secrets:
+      NPM_TOKEN:
+        description: 'NPM registry token'
+        required: false
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'npm'
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Setup NPM registry
+        if: secrets.NPM_TOKEN != ''
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" >> ~/.npmrc
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run type:check
+
+      - name: i18n validation
+        if: ${{ !inputs.skip-i18n-check }}
+        run: |
+          if npm run | grep -q "i18n:check"; then
+            npm run i18n:check
+          else
+            echo "i18n:check script not found, skipping..."
+          fi
+
+      - name: Build
+        if: ${{ !inputs.skip-build }}
+        run: npm run build
+
+      - name: Run unit tests
+        if: ${{ !inputs.skip-tests }}
+        run: npm run test:cov
+
+      - name: Install Playwright browsers
+        if: ${{ !inputs.skip-e2e }}
+        run: npx playwright install --with-deps
+
+      - name: Run e2e tests
+        if: ${{ !inputs.skip-e2e }}
+        run: npm run e2e
+
+      - name: Upload test results
+        if: ${{ !inputs.skip-e2e && failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: ${{ inputs.working-directory }}/playwright-report/
+          retention-days: 30
+          
+      - name: Upload coverage reports
+        if: ${{ !inputs.skip-tests }}
+        uses: codecov/codecov-action@v4
+        with:
+          working-directory: ${{ inputs.working-directory }}
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false

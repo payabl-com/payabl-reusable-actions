@@ -1,0 +1,115 @@
+name: Setup Renovate Configuration
+
+on:
+  workflow_call:
+    inputs:
+      project-type:
+        description: 'Project type (nodejs, nestjs, nextjs)'
+        required: true
+        type: string
+      enable-auto-merge:
+        description: 'Enable auto-merge for minor/patch updates'
+        required: false
+        type: boolean
+        default: false
+      timezone:
+        description: 'Timezone for schedule'
+        required: false
+        type: string
+        default: 'Europe/Berlin'
+      schedule:
+        description: 'Update schedule'
+        required: false
+        type: string
+        default: 'weekly'
+
+jobs:
+  setup-renovate:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create renovate.json
+        run: |
+          cat > renovate.json << 'EOF'
+          {
+            "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+            "extends": [
+              "config:recommended",
+              ":dependencyDashboard",
+              ":semanticCommits",
+              ":separatePatchReleases"
+            ],
+            "timezone": "${{ inputs.timezone }}",
+            "schedule": [
+              "${{ inputs.schedule }}"
+            ],
+            "labels": ["dependencies"],
+            "commitMessagePrefix": "chore(deps):",
+            "prHourlyLimit": 2,
+            "prConcurrentLimit": 10,
+            "separateMinorPatch": true,
+            "packageRules": [
+              {
+                "matchPackageNames": [
+                  "@types/*",
+                  "typescript",
+                  "eslint",
+                  "prettier"
+                ],
+                "groupName": "dev tooling",
+                "automerge": ${{ inputs.enable-auto-merge }}
+              },
+              {
+                "matchUpdateTypes": ["patch"],
+                "automerge": ${{ inputs.enable-auto-merge }},
+                "automergeType": "pr"
+              },
+              {
+                "matchUpdateTypes": ["minor"],
+                "automerge": false
+              },
+              {
+                "matchUpdateTypes": ["major"],
+                "automerge": false,
+                "labels": ["dependencies", "major-update"]
+              }
+            ]
+          }
+          EOF
+
+      - name: Add project-specific rules
+        run: |
+          if [ "${{ inputs.project-type }}" = "nextjs" ]; then
+            # Next.js specific rules
+            jq '.packageRules += [
+              {
+                "matchPackageNames": ["next", "react", "react-dom"],
+                "groupName": "Next.js core",
+                "automerge": false
+              }
+            ]' renovate.json > temp.json && mv temp.json renovate.json
+          elif [ "${{ inputs.project-type }}" = "nestjs" ]; then
+            # NestJS specific rules
+            jq '.packageRules += [
+              {
+                "matchPackagePatterns": ["^@nestjs/"],
+                "groupName": "NestJS framework",
+                "automerge": false
+              }
+            ]' renovate.json > temp.json && mv temp.json renovate.json
+          fi
+
+      - name: Commit renovate.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add renovate.json
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: add renovate configuration"
+            git push
+          fi
