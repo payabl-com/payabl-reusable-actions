@@ -1,0 +1,82 @@
+name: Renovate App
+
+on:
+  workflow_call:
+    inputs:
+      schedule-cron:
+        description: 'Cron schedule for Renovate runs'
+        required: false
+        type: string
+        default: '30 8,10 * * *'
+      renovate-version:
+        description: 'Renovate GitHub Action version'
+        required: false
+        type: string
+        default: 'v41.0.22'
+      checkout-version:
+        description: 'Checkout action version'
+        required: false
+        type: string
+        default: 'v4.3.0'
+      enable-workflow-dispatch:
+        description: 'Enable manual workflow dispatch'
+        required: false
+        type: boolean
+        default: true
+      timezone:
+        description: 'Timezone for logs and scheduling'
+        required: false
+        type: string
+        default: 'UTC'
+    secrets:
+      RENOVATE_APP_ID:
+        description: 'Renovate App ID'
+        required: true
+      RENOVATE_PRIVATE_KEY:
+        description: 'Renovate App Private Key'
+        required: true
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        
+      - name: Create GitHub App Token
+        uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.RENOVATE_APP_ID }}
+          private-key: ${{ secrets.RENOVATE_PRIVATE_KEY }}
+
+      - name: Set timezone
+        if: inputs.timezone != 'UTC'
+        run: |
+          sudo timedatectl set-timezone ${{ inputs.timezone }}
+          echo "Timezone set to: $(timedatectl show --property=Timezone --value)"
+
+      - name: Renovate
+        uses: renovatebot/github-action@8ac70de2fe55752c573155866e30735411e3b61c # v41.0.22
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+        env:
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          LOG_LEVEL: info
+          RENOVATE_CONFIG_FILE: .github/renovate.json
+
+      - name: Renovate summary
+        if: always()
+        run: |
+          echo "## 🔄 Renovate Execution Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Repository:** ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Timezone:** ${{ inputs.timezone }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Schedule:** ${{ inputs.schedule-cron }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Renovate Version:** ${{ inputs.renovate-version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f .github/renovate.json ]; then
+            echo "✅ Custom renovate.json configuration found" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "ℹ️ Using default Renovate configuration" >> $GITHUB_STEP_SUMMARY
+          fi
